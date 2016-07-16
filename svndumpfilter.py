@@ -291,12 +291,15 @@ class Record(object):
             if symbol:  # The last "Value" and its content should be added.
                 self._add_property(symbol, content)
 
-    def _extract_body(self, d_file):
+    def extract_body(self, d_file, skip):
         """
          Extract the body of a record from a dump file.
         """
-        if TEXT_CONTENT_LEN in self.head and self.head[TEXT_CONTENT_LEN] > 10:
-            self.body = d_file.read(int(self.head[TEXT_CONTENT_LEN]))
+        if TEXT_CONTENT_LEN in self.head and int(self.head[TEXT_CONTENT_LEN]) > 0:
+            if skip:
+                d_file.seek(int(self.head[TEXT_CONTENT_LEN]), os.SEEK_CUR)
+            else:
+                self.body = d_file.read(int(self.head[TEXT_CONTENT_LEN]))
 
     def extract_segment(self, d_file):
         """
@@ -304,7 +307,6 @@ class Record(object):
         """
         self._extract_header(d_file)
         self._extract_properties(d_file)
-        self._extract_body(d_file)
 
     def update_head(self, key, value):
         """
@@ -782,11 +784,13 @@ def parse_dump(input_dump, output_dump, matches, include, opt):
                         node_seg = Record(dump_format=dump_version)
                         node_seg.extract_segment(input_file)
                         if node_seg.type == 'Revision':
+                            node_seg.extract_body(input_file, False)
                             flags['next_rev'] = node_seg
                             break  # Finished processing node records and should now look at revision records.
                         else:
                             if flags['can_write']:
                                 if check.is_included(node_seg.head[NODE_PATH]):
+                                    node_seg.extract_body(input_file, opt.scan)
                                     if opt.strip_merge:
                                         to_strip = [i for i, v in enumerate(node_seg.order_prop) if v[1] == SVN_MERGEINFO]
                                         for i in sorted(to_strip, reverse=True):
@@ -835,6 +839,10 @@ def parse_dump(input_dump, output_dump, matches, include, opt):
                                             write_included(rev_map, node_seg, flags, opt)
                                     else:
                                         write_included(rev_map, node_seg, flags, opt)
+                                else:
+                                    node_seg.extract_body(input_file, True)
+                            else:
+                                node_seg.extract_body(input_file, True)
                     if flags['can_write'] and not len(flags['to_write']) > 1:
                         # Adding revision to skipped revs set unless untangled
                         if flags['untangled']:

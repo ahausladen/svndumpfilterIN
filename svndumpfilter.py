@@ -94,6 +94,18 @@ NODE_COPYFROM_REV = 'Node-copyfrom-rev'
 PROP_END = 'PROPS-END'
 SVN_MERGEINFO = 'svn:mergeinfo\n'
 
+def encode_to_fs(name):
+    """
+    Converts the utf-8 name to the file system encoding
+    """
+    return name.decode('utf-8').encode(sys.getfilesystemencoding())
+
+def decode_from_fs(filename):
+    """
+    Converts the filename from the file system encoding to utf-8
+    """
+    return filename.decode(sys.getfilesystemencoding()).encode('utf-8')
+
 def write_empty_lines(d_file, number=1):
     """
     Writes a variable number of empty lines.
@@ -441,6 +453,7 @@ def run_svnlook_command(command, rev_num, repo_path, file_path, filtering, debug
     """
     Runs svnlook to grab the contents of a repository or the contents of a file.
     """
+    file_path = encode_to_fs(file_path)
     command_list = ['svnlook']
     if filtering:  # svn tree
         command_list.extend([filtering, '-r', rev_num, command, repo_path, file_path])
@@ -489,6 +502,7 @@ def handle_missing_directory(d_file, from_path, destination, rev_num, repo_path,
     output = output.splitlines()
     files = filter(lambda a: a != ' ' and a != '', output)
     for transfer_file in files:
+        transfer_file = decode_from_fs(transfer_file)
         if transfer_file[-1] == '/':
             add_dir_to_dump(d_file, destination + '/' + transfer_file[len(from_path) + 1:], dump_version)
         elif transfer_file == from_path + '/':
@@ -558,6 +572,7 @@ def add_dependents(to_write, matches, dump_version):
     for dir_path in dir_to_add:
         node_rec = create_node_record(dir_path[:-1], 'dir', dump_version)
         to_write.append(node_rec)
+    return len(dir_to_add) > 0
 
 
 def handle_deleting_file(d_file, file_path, dump_version):
@@ -671,7 +686,8 @@ def process_revision_record(rev_map, check, include, flags, opt, dump_version):
     flags['to_write'].append(rev_seg)
     rev_map[str(flags['orig_rev'])] = str(flags['renum_rev'])
     if include and int(rev_seg.head[REV_NUM]) == 1:  # Revision 0 can't contain Node Records
-        add_dependents(flags['to_write'], check.matches, dump_version)
+        if add_dependents(flags['to_write'], check.matches, dump_version):
+            flags['included'] = True
     return rev_seg
 
 
@@ -685,13 +701,14 @@ def handle_exclude_to_include(node_seg, output_file, flags, opt, dump_version):
         raise FinishedFiltering('Tangling is necessary')
     if not flags['warning_given']:
         print 'Warning: svnlook is required to pull missing files'
-        flags['warning_given'] = False
+        flags['warning_given'] = True
     write_segments(output_file, flags['to_write'])
     if opt.renumber_revs and not flags['did_increment']:
         flags['renum_rev'] += 1
         flags['did_increment'] = True
     flags['to_write'] = []  # Need to write items in queue because we know that this revision won't be empty
     flags['untangled'] = True
+    flags['included'] = False
     if node_seg.head[NODE_KIND] == 'file':
         handle_missing_file(output_file, node_seg.head[NODE_PATH], node_seg.head[NODE_PATH],
                             str(flags['orig_rev']), opt.repo, dump_version, opt.debug)
@@ -710,6 +727,7 @@ def handle_include_to_exclude(output_file, flags, opt):
         flags['renum_rev'] += 1
         flags['did_increment'] = True
     flags['to_write'] = []
+    flags['included'] = False
 
 
 def write_included(rev_map, node_seg, flags, opt, untangled=False):
@@ -730,6 +748,7 @@ def write_included(rev_map, node_seg, flags, opt, untangled=False):
                 print '>>Updating new_copy_rev: {0}'.format(new_copy_rev)
             node_seg.update_head(NODE_COPYFROM_REV, new_copy_rev)
     flags['to_write'].append(node_seg)
+    flags['included'] = True
 
 
 def parse_dump(input_dump, output_dump, matches, include, opt):
@@ -751,6 +770,7 @@ def parse_dump(input_dump, output_dump, matches, include, opt):
         'next_rev': None,                         # Stores an extracted revision record
         'did_increment': None,                    # Prevents multiple increments for 1 revision
         'to_write': [],                           # List of items to write
+        'included': False,                        # to_write list must be written
     }
 
     print "Starting to filter dumpfile : %s " % input_dump
@@ -773,6 +793,7 @@ def parse_dump(input_dump, output_dump, matches, include, opt):
                     if not opt.quiet:
                         print '---- Working on Input Revision %s (Renumber Rev: %s) ----' % (flags['orig_rev'], flags['renum_rev'])
                     flags['to_write'] = []
+                    flags['included'] = False
                     if not flags['next_rev']:  # This is the first revision (rev 0).
                         rev_seg = Record(dump_format=dump_version)
                         rev_seg.extract_segment(input_file)
@@ -843,7 +864,7 @@ def parse_dump(input_dump, output_dump, matches, include, opt):
                                     node_seg.extract_body(input_file, True)
                             else:
                                 node_seg.extract_body(input_file, True)
-                    if flags['can_write'] and not len(flags['to_write']) > 1:
+                    if flags['can_write'] and not flags['included']:
                         # Adding revision to skipped revs set unless untangled
                         if flags['untangled']:
                             # Reset flag
@@ -851,7 +872,7 @@ def parse_dump(input_dump, output_dump, matches, include, opt):
                         else:
                             print 'Adding revision %s to the skipped revisions list' % (flags['orig_rev'])  # [!!!]
                             empty_revs.add(flags['orig_rev'])
-                    if not opt.drop_empty or len(flags['to_write']) > 1:
+                    if not opt.drop_empty or flags['included']:
                         if flags['can_write']:
                             write_segments(output_file, flags['to_write'])
                         if opt.renumber_revs and not flags['did_increment']:
